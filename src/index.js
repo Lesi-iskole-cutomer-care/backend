@@ -13,37 +13,32 @@ import authRouter from "./api/auth.js";
 
 const app = express();
 
-// ✅ Parse env origins (ONLY for browser origins like Netlify)
+// ✅ Read from ENV (comma separated)
 const allowedOrigins = String(process.env.CORS_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// ✅ CORS middleware
 const corsOptions = {
   origin: (origin, callback) => {
-    // ✅ allow requests with NO origin (React Native apps, Postman, curl)
+    // ✅ allow requests with no origin (React Native apps, Postman, curl)
     if (!origin) return callback(null, true);
 
-    // ✅ allow only listed browser origins (hosting domain)
+    // ✅ allow if origin matches env list
     if (allowedOrigins.includes(origin)) return callback(null, true);
 
     console.log("❌ CORS blocked origin:", origin);
     return callback(new Error("Not allowed by CORS: " + origin));
   },
-
-  // ⚠️ set true ONLY if you use cookies (sessions)
-  // If you use JWT in Authorization header, you can set false.
   credentials: true,
-
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
 };
 
 app.use(cors(corsOptions));
 
-// ✅ IMPORTANT: preflight requests
-app.options("*", cors(corsOptions));
+// ✅ FIX: Express/router doesn't accept "*" here
+app.options("/*", cors(corsOptions));
 
 app.use(express.json());
 
@@ -58,7 +53,6 @@ app.use("/api/auth", authRouter);
 
 const PORT = process.env.PORT || 8080;
 
-// ✅ Start server after DB connects (recommended)
 async function start() {
   try {
     await connectDB();
@@ -66,8 +60,8 @@ async function start() {
       console.log(`✅ Server running on port ${PORT}`);
       console.log("✅ Allowed browser origins:", allowedOrigins);
     });
-  } catch (err) {
-    console.error("❌ Failed to start server:", err);
+  } catch (e) {
+    console.error("❌ Server failed to start:", e);
     process.exit(1);
   }
 }
