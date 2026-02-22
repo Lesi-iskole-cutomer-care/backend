@@ -1,4 +1,3 @@
-// index.js (backend)
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -14,18 +13,21 @@ import authRouter from "./api/auth.js";
 
 const app = express();
 
-const allowedOrigins = [
-  "http://localhost:5174", // Vite web app
-  "http://localhost:8081", // Expo web bundle
-];
+// ✅ Read from ENV
+const allowedOrigins = String(process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin) return callback(null, true); // RN apps
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+    origin: (origin, callback) => {
+      // ✅ allow requests with no origin (mobile apps, Postman, curl)
+      if (!origin) return callback(null, true);
+
+      // ✅ allow if origin matches env list
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+
       console.log("❌ CORS blocked origin:", origin);
       return callback(new Error("Not allowed by CORS"));
     },
@@ -51,5 +53,5 @@ connectDB();
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Server is running on  192.168.8.107:${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
