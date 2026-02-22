@@ -13,7 +13,9 @@ import authRouter from "./api/auth.js";
 
 const app = express();
 
-// ✅ Read from ENV (comma separated)
+console.log("RAW CORS_ORIGINS =", process.env.CORS_ORIGINS);
+
+// ✅ hosting link only
 const allowedOrigins = String(process.env.CORS_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
@@ -21,24 +23,25 @@ const allowedOrigins = String(process.env.CORS_ORIGINS || "")
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // ✅ allow requests with no origin (React Native apps, Postman, curl)
+    // ✅ allow no-origin (React Native apps, Postman)
     if (!origin) return callback(null, true);
 
-    // ✅ allow if origin matches env list
+    // ✅ allow only your hosting domain(s)
     if (allowedOrigins.includes(origin)) return callback(null, true);
 
     console.log("❌ CORS blocked origin:", origin);
-    return callback(new Error("Not allowed by CORS: " + origin));
+    return callback(null, false); // block silently (no crash)
   },
+
+  // ✅ set true ONLY if you use cookies; if using JWT only, set false.
   credentials: true,
+
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
 };
 
 app.use(cors(corsOptions));
-
-// ✅ FIX: Express/router doesn't accept "*" here
-app.options("/*", cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 
 app.use(express.json());
 
@@ -60,8 +63,8 @@ async function start() {
       console.log(`✅ Server running on port ${PORT}`);
       console.log("✅ Allowed browser origins:", allowedOrigins);
     });
-  } catch (e) {
-    console.error("❌ Server failed to start:", e);
+  } catch (err) {
+    console.error("❌ Failed to start server:", err);
     process.exit(1);
   }
 }
