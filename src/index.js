@@ -13,29 +13,37 @@ import authRouter from "./api/auth.js";
 
 const app = express();
 
-// ✅ Read from ENV
+// ✅ Parse env origins (ONLY for browser origins like Netlify)
 const allowedOrigins = String(process.env.CORS_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // ✅ allow requests with no origin (mobile apps, Postman, curl)
-      if (!origin) return callback(null, true);
+// ✅ CORS middleware
+const corsOptions = {
+  origin: (origin, callback) => {
+    // ✅ allow requests with NO origin (React Native apps, Postman, curl)
+    if (!origin) return callback(null, true);
 
-      // ✅ allow if origin matches env list
-      if (allowedOrigins.includes(origin)) return callback(null, true);
+    // ✅ allow only listed browser origins (hosting domain)
+    if (allowedOrigins.includes(origin)) return callback(null, true);
 
-      console.log("❌ CORS blocked origin:", origin);
-      return callback(new Error("Not allowed by CORS"));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+    console.log("❌ CORS blocked origin:", origin);
+    return callback(new Error("Not allowed by CORS: " + origin));
+  },
+
+  // ⚠️ set true ONLY if you use cookies (sessions)
+  // If you use JWT in Authorization header, you can set false.
+  credentials: true,
+
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+
+// ✅ IMPORTANT: preflight requests
+app.options("*", cors(corsOptions));
 
 app.use(express.json());
 
@@ -48,10 +56,20 @@ app.use("/api/complaints", complaintRouter);
 app.use("/api/responsiblepeople", responsiblePersonRouter);
 app.use("/api/auth", authRouter);
 
-connectDB();
-
 const PORT = process.env.PORT || 8080;
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Server running on port ${PORT}`);
-});
+// ✅ Start server after DB connects (recommended)
+async function start() {
+  try {
+    await connectDB();
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`✅ Server running on port ${PORT}`);
+      console.log("✅ Allowed browser origins:", allowedOrigins);
+    });
+  } catch (err) {
+    console.error("❌ Failed to start server:", err);
+    process.exit(1);
+  }
+}
+
+start();
