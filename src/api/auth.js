@@ -5,7 +5,7 @@ import {
   signOut,
   sendVerificationCode,
   verifyCode,
-} from "../application/Auth.js";
+} from "../application/auth.js";
 
 const router = express.Router();
 
