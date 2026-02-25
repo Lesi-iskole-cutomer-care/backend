@@ -3,31 +3,31 @@ import User from "../infastructure/schemas/User.js";
 import { sendWhatsApp } from "../api/whatsapp.js";
 
 /**
- * Map<phonenumber, { code: string, expiresAt: number }>
+ * Map<phonenumber, { code: string, expiresAt: number, purpose: "signup"|"forgot" }>
  */
 const pendingOtps = new Map();
 
 const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-const saveOtpForPhone = (phonenumber, code) => {
-  const expiresAt = Date.now() + 5 * 60 * 1000;
-  pendingOtps.set(phonenumber, { code, expiresAt });
+const saveOtpForPhone = (phonenumber, code, purpose) => {
+  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 min
+  pendingOtps.set(phonenumber, { code, expiresAt, purpose });
 };
 
-const validateOtpForPhone = (phonenumber, code) => {
+const validateOtpForPhone = (phonenumber, code, purpose) => {
   const record = pendingOtps.get(phonenumber);
   if (!record) return { ok: false, reason: "no_otp" };
 
-  const { code: savedCode, expiresAt } = record;
+  const { code: savedCode, expiresAt, purpose: savedPurpose } = record;
+
+  if (savedPurpose !== purpose) return { ok: false, reason: "wrong_purpose" };
 
   if (Date.now() > expiresAt) {
     pendingOtps.delete(phonenumber);
     return { ok: false, reason: "expired" };
   }
 
-  if (savedCode !== code) {
-    return { ok: false, reason: "mismatch" };
-  }
+  if (savedCode !== code) return { ok: false, reason: "mismatch" };
 
   pendingOtps.delete(phonenumber);
   return { ok: true };
@@ -38,21 +38,25 @@ const sendWhatsAppCode = async (phonenumber, code) => {
   try {
     await sendWhatsApp(phonenumber, message);
   } catch (err) {
-    console.error("Error sending WhatsApp code via ChatBizz:", err.message || err);
+    console.error("Error sending WhatsApp code:", err?.message || err);
   }
 };
 
 const toUserResponse = (user) => ({
   id: user._id,
+  _id: user._id,
   name: user.name,
   gender: user.gender,
   phonenumber: user.phonenumber,
   role: user.role,
+  isVerified: user.isVerified,
+  otpStatus: user.otpStatus,
+  approvalStatus: user.approvalStatus,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
 });
 
-// ✅ SIGN UP
+// ✅ SIGN UP (admin auto-approved, agent pending)
 export const signUp = async (req, res) => {
   try {
     const { name, gender, phonenumber, password, role } = req.body;
@@ -65,27 +69,28 @@ export const signUp = async (req, res) => {
 
     const existing = await User.findOne({ phonenumber });
     if (existing) {
-      return res.status(409).json({
-        message: "User with this phone number already exists",
-      });
+      return res.status(409).json({ message: "User with this phone number already exists" });
     }
 
-    // ✅ hash password and store in "password"
     const hashed = await bcrypt.hash(String(password), 10);
-
-    // ✅ enforce roles
     const userRole = role === "admin" ? "admin" : "agent";
+
+    // ✅ KEY FIX
+    const approvalStatus = userRole === "admin" ? "approved" : "pending";
 
     const user = await User.create({
       name,
       gender,
       phonenumber,
-      password: hashed, // ✅ IMPORTANT FIX
+      password: hashed,
       role: userRole,
+      isVerified: false,
+      otpStatus: "none",
+      approvalStatus,
     });
 
     const code = generateOtp();
-    saveOtpForPhone(phonenumber, code);
+    saveOtpForPhone(phonenumber, code, "signup");
     await sendWhatsAppCode(phonenumber, code);
 
     return res.status(201).json({
@@ -98,7 +103,70 @@ export const signUp = async (req, res) => {
   }
 };
 
-// ✅ SIGN IN (FIXED for select:false password)
+// ✅ Resend SIGNUP OTP
+export const sendSignupVerificationCode = async (req, res) => {
+  try {
+    const { phonenumber } = req.body;
+    if (!phonenumber) return res.status(400).json({ message: "phonenumber is required" });
+
+    const user = await User.findOne({ phonenumber });
+    if (!user) return res.status(404).json({ message: "User not found for this phone" });
+
+    const code = generateOtp();
+    saveOtpForPhone(phonenumber, code, "signup");
+    await sendWhatsAppCode(phonenumber, code);
+
+    return res.status(200).json({ message: "Verification code sent via WhatsApp", phonenumber });
+  } catch (err) {
+    console.error("sendSignupVerificationCode error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// ✅ Verify SIGNUP OTP
+export const verifySignupCode = async (req, res) => {
+  try {
+    const { phonenumber, code } = req.body;
+
+    if (!phonenumber || !code) {
+      return res.status(400).json({ message: "phonenumber and code are required" });
+    }
+
+    const user = await User.findOne({ phonenumber });
+    if (!user) return res.status(404).json({ message: "User not found for this phone" });
+
+    const validation = validateOtpForPhone(phonenumber, code, "signup");
+
+    if (!validation.ok) {
+      await User.updateOne(
+        { phonenumber },
+        { $set: { isVerified: false, otpStatus: "failed" } }
+      );
+
+      if (validation.reason === "expired") {
+        return res.status(400).json({ message: "Code expired. Please request a new one." });
+      }
+      if (validation.reason === "mismatch") {
+        return res.status(400).json({ message: "Invalid code" });
+      }
+      return res.status(400).json({ message: "No code found for this number" });
+    }
+
+    user.isVerified = true;
+    user.otpStatus = "verified";
+    await user.save();
+
+    return res.status(200).json({
+      message: "Verification successful",
+      user: toUserResponse(user),
+    });
+  } catch (err) {
+    console.error("verifySignupCode error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// ✅ SIGN IN (only agent requires approval)
 export const signIn = async (req, res) => {
   try {
     const { phonenumber, password } = req.body;
@@ -107,25 +175,36 @@ export const signIn = async (req, res) => {
       return res.status(400).json({ message: "phonenumber and password are required" });
     }
 
-    // ✅ must select password explicitly
     const user = await User.findOne({ phonenumber }).select("+password");
-    if (!user) {
-      return res.status(401).json({ message: "Invalid phone or password" });
-    }
+    if (!user) return res.status(401).json({ message: "Invalid phone or password" });
 
     if (!user.password) {
       return res.status(400).json({
-        message:
-          "This account has no password saved (old data). Please reset password or create account again.",
+        message: "This account has no password saved (old data). Please reset password.",
       });
     }
 
     const isMatch = await bcrypt.compare(String(password), user.password);
-    if (!isMatch) {
-      return res.status(401).json({ message: "Invalid phone or password" });
+    if (!isMatch) return res.status(401).json({ message: "Invalid phone or password" });
+
+    // ✅ must be OTP verified (for both roles)
+    if (!user.isVerified) {
+      return res.status(403).json({
+        message: "Please verify OTP first",
+        reason: "NOT_VERIFIED",
+      });
     }
 
-    // ✅ return safe user response (no password)
+    // ✅ KEY FIX: approval check ONLY for agent
+    if (user.role === "agent" && user.approvalStatus !== "approved") {
+      return res.status(403).json({
+        message: "Your account is pending admin approval",
+        reason: "PENDING_APPROVAL",
+        approvalStatus: user.approvalStatus,
+        user: toUserResponse(user),
+      });
+    }
+
     return res.status(200).json({
       message: "Logged in successfully",
       user: toUserResponse(user),
@@ -136,57 +215,50 @@ export const signIn = async (req, res) => {
   }
 };
 
-// SIGN OUT
+// ✅ SIGN OUT
 export const signOut = async (req, res) => {
   try {
-    return res.status(200).json({
-      message: "Signed out successfully. Clear user on client side.",
-    });
+    return res.status(200).json({ message: "Signed out successfully. Clear user on client side." });
   } catch (err) {
     console.error("signOut error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// Send code again
-export const sendVerificationCode = async (req, res) => {
+/* ============================
+   FORGOT PASSWORD FLOW
+============================ */
+
+export const forgotSendCode = async (req, res) => {
   try {
     const { phonenumber } = req.body;
-
-    if (!phonenumber) {
-      return res.status(400).json({ message: "phonenumber is required" });
-    }
+    if (!phonenumber) return res.status(400).json({ message: "phonenumber is required" });
 
     const user = await User.findOne({ phonenumber });
-    if (!user) {
-      return res.status(404).json({ message: "User not found for this phone" });
-    }
+    if (!user) return res.status(404).json({ message: "User not found for this phone" });
 
     const code = generateOtp();
-    saveOtpForPhone(phonenumber, code);
+    saveOtpForPhone(phonenumber, code, "forgot");
     await sendWhatsAppCode(phonenumber, code);
 
-    return res.status(200).json({
-      message: "Verification code sent via WhatsApp",
-      phonenumber,
-    });
+    return res.status(200).json({ message: "Reset code sent via WhatsApp", phonenumber });
   } catch (err) {
-    console.error("sendVerificationCode error:", err);
+    console.error("forgotSendCode error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// Verify code
-export const verifyCode = async (req, res) => {
+export const forgotVerifyCode = async (req, res) => {
   try {
     const { phonenumber, code } = req.body;
-
     if (!phonenumber || !code) {
       return res.status(400).json({ message: "phonenumber and code are required" });
     }
 
-    const validation = validateOtpForPhone(phonenumber, code);
+    const user = await User.findOne({ phonenumber });
+    if (!user) return res.status(404).json({ message: "User not found for this phone" });
 
+    const validation = validateOtpForPhone(phonenumber, code, "forgot");
     if (!validation.ok) {
       if (validation.reason === "expired") {
         return res.status(400).json({ message: "Code expired. Please request a new one." });
@@ -197,17 +269,33 @@ export const verifyCode = async (req, res) => {
       return res.status(400).json({ message: "No code found for this number" });
     }
 
-    const user = await User.findOne({ phonenumber });
-    if (!user) {
-      return res.status(404).json({ message: "User not found for this phone" });
+    return res.status(200).json({ message: "Code verified. You can reset password now.", phonenumber });
+  } catch (err) {
+    console.error("forgotVerifyCode error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+export const forgotResetPassword = async (req, res) => {
+  try {
+    const { phonenumber, newPassword } = req.body;
+    if (!phonenumber || !newPassword) {
+      return res.status(400).json({ message: "phonenumber and newPassword are required" });
     }
 
-    return res.status(200).json({
-      message: "Verification successful",
-      user: toUserResponse(user),
-    });
+    const hashed = await bcrypt.hash(String(newPassword), 10);
+
+    const updated = await User.findOneAndUpdate(
+      { phonenumber },
+      { $set: { password: hashed } },
+      { new: true }
+    );
+
+    if (!updated) return res.status(404).json({ message: "User not found" });
+
+    return res.status(200).json({ message: "Password reset successful" });
   } catch (err) {
-    console.error("verifyCode error:", err);
+    console.error("forgotResetPassword error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
 };

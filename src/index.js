@@ -1,3 +1,4 @@
+// src/index.js
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -13,9 +14,11 @@ import authRouter from "./api/auth.js";
 
 const app = express();
 
-console.log("RAW CORS_ORIGINS =", process.env.CORS_ORIGINS);
-
-// ✅ hosting link only
+/**
+ * .env (NO spaces):
+ * PORT=8081
+ * CORS_ORIGINS=http://localhost:5173,http://localhost:8081,https://lesicustomercare.netlify.app
+ */
 const allowedOrigins = String(process.env.CORS_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
@@ -23,29 +26,32 @@ const allowedOrigins = String(process.env.CORS_ORIGINS || "")
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // ✅ allow no-origin (React Native apps, Postman)
     if (!origin) return callback(null, true);
 
-    // ✅ allow only your hosting domain(s)
+    // ✅ local dev allow any localhost port
+    if (origin.startsWith("http://localhost:")) return callback(null, true);
+    if (origin.startsWith("http://127.0.0.1:")) return callback(null, true);
+
     if (allowedOrigins.includes(origin)) return callback(null, true);
 
     console.log("❌ CORS blocked origin:", origin);
-    return callback(null, false); // block silently (no crash)
+    return callback(new Error("Not allowed by CORS"), false);
   },
-
-  // ✅ set true ONLY if you use cookies; if using JWT only, set false.
   credentials: true,
-
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-user-id"],
+  optionsSuccessStatus: 204,
 };
 
+// ✅ CORS first
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions));
 
-app.use(express.json());
+// ✅ FIX: preflight handler (DON'T use "*")
+app.options(/.*/, cors(corsOptions)); // <-- regex works with your router/path-to-regexp
 
-// Routes
+app.use(express.json({ limit: "2mb" }));
+
+// routes
 app.use("/api/user", userRouter);
 app.use("/api/mainproblems", mainProblemRouter);
 app.use("/api/subproblems", subProblemRoutes);
@@ -54,14 +60,25 @@ app.use("/api/complaints", complaintRouter);
 app.use("/api/responsiblepeople", responsiblePersonRouter);
 app.use("/api/auth", authRouter);
 
-const PORT = process.env.PORT || 8080;
+// health check
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true, message: "API running" });
+});
+
+// error handler
+app.use((err, req, res, next) => {
+  console.error("❌ Error:", err?.message || err);
+  res.status(500).json({ message: err?.message || "Server error" });
+});
+
+const PORT = Number(process.env.PORT || 8081);
 
 async function start() {
   try {
     await connectDB();
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`✅ Server running on port ${PORT}`);
-      console.log("✅ Allowed browser origins:", allowedOrigins);
+      console.log("✅ Allowed origins:", allowedOrigins);
     });
   } catch (err) {
     console.error("❌ Failed to start server:", err);
